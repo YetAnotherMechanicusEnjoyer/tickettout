@@ -24,6 +24,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(echo::echo)
             .service(csv::transactions_to_csv)
             .configure(user::configure)
+            .service(audit::export_audit)
+            .service(audit::list_audit)
             .service(buisness::get_partner_directory)
             .service(buisness::get_pending_partners)
             .service(buisness::get_users)

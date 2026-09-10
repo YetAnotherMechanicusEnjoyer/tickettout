@@ -8,8 +8,9 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: postgres://cartepro:${POSTGRES_PASSWORD}@postgres:5432/cartepro
+      DATABASE_URL: postgres://cartepro_app:cartepro_dev_password@postgres:5432/cartepro
       RUST_LOG: info
+      AUDIT_EXPORT_KEY: cartepro_dev_audit_hmac_key
     depends_on:
       postgres:
         condition: service_healthy

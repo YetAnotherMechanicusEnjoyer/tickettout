@@ -56,5 +56,11 @@ CREATE TABLE audit (
     previous_hash VARCHAR(64) NOT NULL
 );
 
-REVOKE UPDATE, DELETE ON audit FROM tickettout; 
-GRANT INSERT, SELECT ON audit TO tickettout;
+CREATE ROLE cartepro_app LOGIN PASSWORD 'cartepro_dev_password';
+GRANT USAGE ON SCHEMA public TO cartepro_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+  users, state, employee, partner, admin, transaction
+  TO cartepro_app;
+
+GRANT SELECT, INSERT ON audit TO cartepro_app;
+REVOKE UPDATE, DELETE ON audit FROM cartepro_app;

@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    db::{get_by_id, get_one, insert},
+    db::{get_by_id, get_one, update},
     entities::{employee, partner, state, transaction, user},
 };
 
@@ -121,10 +121,15 @@ pub struct PaymentRequest {
 )]
 #[post("/process/payment")]
 pub async fn process_payment(
+    req: HttpRequest,
     db: web::Data<DatabaseConnection>,
     body: web::Json<PaymentRequest>,
 ) -> impl Responder {
-    if body.amount <= 0.0 {
+    let ip = crate::api::audit::client_ip(&req);
+    let amount = body.amount;
+    let partner_id = body.partner_id;
+
+    if amount <= 0.0 {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": "Invalid amount" }));
     }
 
@@ -168,8 +173,40 @@ pub async fn process_payment(
         .await;
 
     match txn_result {
-        Ok(tx) => HttpResponse::Ok().json(tx),
+        Ok(tx) => {
+            let entry = crate::api::audit::new_entry(
+                Some(partner_id),
+                Some("Partner".to_string()),
+                "transaction_validated",
+                Some("transaction".to_string()),
+                Some(tx.id.to_string()),
+                Some(serde_json::json!({
+                    "amount": amount,
+                    "employee_id": tx.employee_id,
+                })),
+                ip,
+            );
+            if let Err(e) = crate::api::audit::log_audit(db.get_ref(), entry).await {
+                log::error!("audit log failed: {e}");
+            }
+            HttpResponse::Ok().json(tx)
+        }
         Err(sea_orm::TransactionError::Transaction(msg)) => {
+            let entry = crate::api::audit::new_entry(
+                Some(partner_id),
+                Some("Partner".to_string()),
+                "transaction_refused",
+                Some("payment_attempt".to_string()),
+                None,
+                Some(serde_json::json!({
+                    "amount": amount,
+                    "reason": msg.to_string(),
+                })),
+                ip,
+            );
+            if let Err(e) = crate::api::audit::log_audit(db.get_ref(), entry).await {
+                log::error!("audit log failed: {e}");
+            }
             HttpResponse::BadRequest().json(serde_json::json!({ "error": msg.to_string() }))
         }
         Err(e) => {
@@ -240,7 +277,7 @@ pub async fn begin_payment(req: HttpRequest, db: web::Data<DatabaseConnection>) 
             };
             employee.qr_token = ActiveValue::Set(Some(token_body.qr_token.clone()));
             employee.qr_token_created_at = ActiveValue::Set(Some(chrono::Utc::now().timestamp()));
-            match insert::<employee::Entity, _>(db.get_ref(), employee).await {
+            match update::<employee::Entity, _>(db.get_ref(), employee).await {
                 Ok(_) => HttpResponse::Ok().json(token_body),
                 Err(e) => HttpResponse::InternalServerError()
                     .json(serde_json::json!({ "error": e.to_string() })),

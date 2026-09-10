@@ -15,9 +15,18 @@ export async function api<T>(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
+    let message = body;
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed.error === "string") {
+        message = parsed.error;
+      }
+    } catch {
+      /* body isn't JSON, use it as-is */
+    }
     throw new ApiError(
       response.status,
-      body || `API request failed: ${response.status}`,
+      message || `API request failed: ${response.status}`,
     );
   }
 

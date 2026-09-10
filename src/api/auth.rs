@@ -1,9 +1,10 @@
 use crate::{
+    api::audit::{client_ip, log_audit, new_entry},
     db::{get_one, insert},
     entities::{employee as Employee, partner as Partner, state as State, user as User},
     models::Role,
 };
-use actix_web::{HttpResponse, Responder, post, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, post, web};
 use sea_orm::{
     ActiveValue, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, TransactionTrait,
 };
@@ -37,14 +38,28 @@ pub struct AuthResponse {
 )]
 #[post("/login")]
 pub async fn login(
+    req: HttpRequest,
     body: web::Json<LoginRequest>,
     db: web::Data<DatabaseConnection>,
 ) -> impl Responder {
+    let ip = client_ip(&req);
     let query = User::Entity::find().filter(User::Column::Mail.eq(&body.mail));
 
     match get_one(&**db, query).await {
         Ok(Some(user)) => {
             if user.password != body.password {
+                let entry = new_entry(
+                    Some(user.id),
+                    Some(format!("{:?}", user.role)),
+                    "login_failed",
+                    Some("user".to_string()),
+                    Some(user.id.to_string()),
+                    Some(serde_json::json!({ "reason": "wrong_password", "mail": body.mail })),
+                    ip,
+                );
+                if let Err(e) = log_audit(db.get_ref(), entry).await {
+                    log::error!("audit log failed: {e}");
+                }
                 return HttpResponse::Unauthorized().body("Wrong password.");
             }
 
@@ -77,7 +92,21 @@ pub async fn login(
                 role: user.role.into(),
             })
         }
-        Ok(None) => HttpResponse::Unauthorized().finish(),
+        Ok(None) => {
+            let entry = new_entry(
+                None,
+                None,
+                "login_failed",
+                Some("user".to_string()),
+                None,
+                Some(serde_json::json!({ "reason": "unknown_mail", "mail": body.mail })),
+                ip,
+            );
+            if let Err(e) = log_audit(db.get_ref(), entry).await {
+                log::error!("audit log failed: {e}");
+            }
+            HttpResponse::Unauthorized().finish()
+        }
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
@@ -106,9 +135,11 @@ pub struct RegisterRequest {
 )]
 #[post("/register")]
 pub async fn register(
+    req: HttpRequest,
     body: web::Json<RegisterRequest>,
     db: web::Data<DatabaseConnection>,
 ) -> impl Responder {
+    let ip = client_ip(&req);
     let query = User::Entity::find().filter(User::Column::Mail.eq(&body.mail));
 
     match get_one(db.get_ref(), query).await {
@@ -204,6 +235,19 @@ pub async fn register(
 
     if let Err(e) = txn.commit().await {
         return HttpResponse::InternalServerError().body(e.to_string());
+    }
+
+    let entry = new_entry(
+        Some(inserted_user.id),
+        Some(format!("{:?}", inserted_user.role)),
+        "account_created",
+        Some("user".to_string()),
+        Some(inserted_user.id.to_string()),
+        Some(serde_json::json!({ "mail": inserted_user.mail, "role": format!("{:?}", inserted_user.role) })),
+        ip,
+    );
+    if let Err(e) = log_audit(db.get_ref(), entry).await {
+        log::error!("audit log failed: {e}");
     }
 
     HttpResponse::Ok().json(AuthResponse {

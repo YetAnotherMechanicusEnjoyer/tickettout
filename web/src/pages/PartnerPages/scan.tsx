@@ -10,6 +10,8 @@ import {
 import { Button } from "../../components/ui/button"
 import { Input } from "../../components/ui/input"
 import { Watermark } from "../../components/Watermark"
+import { api, ApiError } from "../../api"
+import { getUser } from "../../auth"
 
 type DetectedBarcode = { rawValue: string; format: string }
 type BarcodeDetectorLike = {
@@ -24,7 +26,14 @@ declare global {
   }
 }
 
-type Status = "idle" | "starting" | "scanning" | "scanned" | "paid" | "error"
+type Status =
+  | "idle"
+  | "starting"
+  | "scanning"
+  | "scanned"
+  | "paying"
+  | "paid"
+  | "error"
 
 const SCAN_INTERVAL_MS = 250
 
@@ -171,15 +180,44 @@ export default function PartnerScanPage() {
     if (manual.trim()) handleDetected(manual.trim())
   }
 
-  function confirmPayment(event: React.FormEvent<HTMLFormElement>) {
+  async function confirmPayment(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const value = Number(amount.replace(",", "."))
     if (!Number.isFinite(value) || value <= 0) {
       setError("Montant invalide.")
       return
     }
+    const partner = getUser()
+    if (!partner) {
+      setError("Vous devez être connecté en tant que partenaire.")
+      return
+    }
+    if (!result) {
+      setError("Aucun QR code détecté.")
+      return
+    }
+
     setError(null)
-    setStatus("paid")
+    setStatus("paying")
+    try {
+      await api("/process/payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          qr_token: result,
+          partner_id: partner.id,
+          amount: value,
+        }),
+      })
+      setStatus("paid")
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Impossible de valider le paiement.",
+      )
+      setStatus("scanned")
+    }
   }
 
   const parsedAmount = Number(amount.replace(",", "."))
@@ -198,7 +236,7 @@ export default function PartnerScanPage() {
     status === "error"
 
   return (
-    <Watermark text="SIMULATION SCAN PARTENAIRE">
+    <Watermark text="PAIEMENT RÉEL — DÉBIT EFFECTIF DU SOLDE">
       <main className="mx-auto flex w-full max-w-xl flex-col gap-6 p-6 md:p-10">
         <div>
           <h1 className="text-2xl font-semibold">Encaisser un paiement</h1>
@@ -281,7 +319,7 @@ export default function PartnerScanPage() {
               </>
             )}
 
-            {status === "scanned" && result && (
+            {(status === "scanned" || status === "paying") && result && (
               <form className="flex flex-col gap-4" onSubmit={confirmPayment}>
                 <div className="rounded-lg border bg-muted/40 p-3">
                   <p className="text-xs uppercase text-muted-foreground">
@@ -300,6 +338,7 @@ export default function PartnerScanPage() {
                     placeholder="0,00"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
+                    disabled={status === "paying"}
                     required
                   />
                 </div>
@@ -307,8 +346,15 @@ export default function PartnerScanPage() {
                 {error && <p className="text-sm text-destructive">{error}</p>}
 
                 <div className="flex gap-2">
-                  <Button type="submit">Valider le paiement</Button>
-                  <Button type="button" variant="outline" onClick={reset}>
+                  <Button type="submit" disabled={status === "paying"}>
+                    {status === "paying" ? "Validation…" : "Valider le paiement"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={status === "paying"}
+                    onClick={reset}
+                  >
                     Annuler
                   </Button>
                 </div>
@@ -336,7 +382,7 @@ export default function PartnerScanPage() {
                   <p className="text-lg font-semibold">Paiement validé</p>
                   {formattedAmount && (
                     <p className="text-sm text-muted-foreground">
-                      {formattedAmount} encaissés (simulation).
+                      {formattedAmount} encaissés.
                     </p>
                   )}
                 </div>
